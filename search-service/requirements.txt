@@ -1,0 +1,20 @@
+# --- Web framework ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# --- Clients ---
+# pymilvus MAJOR.MINOR must match the Milvus server (we run Milvus v2.4.x).
+pymilvus==2.4.9
+httpx==0.27.2                  # async HTTP client used to call Ollama for embeddings
+
+# Transitive-dependency pin: pymilvus -> environs (9.5.0) reads
+# marshmallow.__version_info__, which marshmallow 4.x removed. Without this pin
+# the image builds but crashes on import. Keep marshmallow on the 3.x line.
+marshmallow<4
+
+# --- Config / validation ---
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# --- Observability ---
+prometheus-client==0.20.0

@@ -1,0 +1,17 @@
+# Grafana auto-provisions these datasources on startup, so you never have to add
+# them by hand in the UI.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus            # referenced by dashboards
+    type: prometheus
+    access: proxy              # Grafana server queries the datasource, not the browser
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100

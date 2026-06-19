@@ -1,0 +1,37 @@
+# Alert rules. Prometheus evaluates these continuously; firing alerts are visible
+# at http://localhost:9090/alerts (and can be routed to Alertmanager -> Telegram/
+# Slack, see docs/04-observability.md).
+groups:
+  - name: availability
+    rules:
+      # `up` is 1 when a scrape target is reachable, 0 when it isn't.
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m                       # must stay down 1 min to avoid flapping
+        labels:
+          severity: critical
+        annotations:
+          summary: "Target {{ $labels.job }} ({{ $labels.instance }}) is down"
+          description: "Prometheus has not been able to scrape {{ $labels.instance }} for over 1 minute."
+
+  - name: resources
+    rules:
+      # Less than 10% host memory available.
+      - alert: HostHighMemory
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host memory almost exhausted"
+          description: "Only {{ $value | printf \"%.1f\" }}% memory available on the host."
+
+      # Root filesystem more than 85% full.
+      - alert: HostDiskAlmostFull
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/host"} / node_filesystem_size_bytes{mountpoint="/host"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk almost full on host"
+          description: "Root filesystem is {{ $value | printf \"%.1f\" }}% full."

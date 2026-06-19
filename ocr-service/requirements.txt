@@ -1,0 +1,20 @@
+# --- Web framework ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9        # needed for multipart/form-data (file uploads)
+
+# --- OCR engine ---
+# RapidOCR runs the PP-OCR (PaddleOCR) model family via ONNX Runtime instead of
+# the paddlepaddle native runtime. Same models, but a pure-ONNX backend that is
+# far more stable in slim containers (the paddlepaddle wheel aborts with
+# "free(): invalid size" on recent glibc). Models ship inside the wheel, so the
+# service runs fully offline with no download at startup.
+rapidocr-onnxruntime==1.3.24
+onnxruntime==1.19.2            # CPU inference backend (pinned for reproducibility)
+
+# --- Image handling ---
+pillow==10.4.0
+numpy<2                        # the opencv/onnxruntime stack here expects numpy 1.x
+
+# --- Observability ---
+prometheus-client==0.20.0      # exposes /metrics for Prometheus to scrape

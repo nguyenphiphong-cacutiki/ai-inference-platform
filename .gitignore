@@ -1,0 +1,14 @@
+# Secrets / generated artifacts — never commit these.
+.env
+nginx/.htpasswd
+nginx/certs/*.crt
+nginx/certs/*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# OS
+.DS_Store

@@ -1,0 +1,325 @@
+# =============================================================================
+# AI Service Deployment Hub — Docker Compose
+# =============================================================================
+# Service groups:
+#   * Core (no profile)      : ollama, ocr-service, search-service, milvus stack, nginx
+#   * Monitoring (profile)   : prometheus, grafana, loki, promtail, exporters
+#
+# Bring up the core stack:           docker compose up -d
+# Add observability on top:          docker compose --profile monitoring up -d
+# Everything in one go:              docker compose --profile monitoring up -d
+#
+# Admin UIs (grafana/prometheus) and service test ports are bound to 127.0.0.1
+# so they are NOT reachable from the public internet — only Nginx (80/443) is.
+# =============================================================================
+
+# Shared log configuration applied to every service. Rotating logs (max-size +
+# max-file) prevents a chatty container from filling the disk — see Phase 5,
+# troubleshooting case #6.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  aihub:
+    name: aihub
+
+volumes:
+  ollama_data:       # downloaded LLM/embedding models
+  milvus_data:       # Milvus segment data
+  etcd_data:         # Milvus metadata (etcd)
+  minio_data:        # Milvus object storage (minio)
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+services:
+  # ---------------------------------------------------------------------------
+  # LLM service — Ollama
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-latest}
+    container_name: ollama
+    restart: unless-stopped
+    networks: [aihub]
+    ports:
+      - "127.0.0.1:11434:11434"   # exposed on localhost for direct curl testing
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      # The ollama image ships the `ollama` CLI but not curl, so we probe with it.
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${OLLAMA_MEM_LIMIT:-5g}   # a 3B model in CPU mode needs headroom
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # OCR service — FastAPI + PaddleOCR
+  # ---------------------------------------------------------------------------
+  ocr-service:
+    build: ./ocr-service
+    image: aihub/ocr-service:1.0.0
+    container_name: ocr-service
+    restart: unless-stopped
+    networks: [aihub]
+    ports:
+      - "127.0.0.1:8001:8000"     # direct testing before Nginx exists (Phase 1)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ocr/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s           # model load takes a moment on cold start
+    deploy:
+      resources:
+        limits:
+          memory: ${OCR_MEM_LIMIT:-2g}
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Search/RAG service — FastAPI + Milvus + Ollama embeddings
+  # ---------------------------------------------------------------------------
+  search-service:
+    build: ./search-service
+    image: aihub/search-service:1.0.0
+    container_name: search-service
+    restart: unless-stopped
+    networks: [aihub]
+    ports:
+      - "127.0.0.1:8002:8000"
+    environment:
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+      OLLAMA_URL: http://ollama:11434
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      EMBED_DIM: "768"
+      COLLECTION_NAME: ${COLLECTION_NAME:-documents}
+    depends_on:
+      milvus:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/search/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${SEARCH_MEM_LIMIT:-1g}
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Milvus standalone = milvus + etcd (metadata) + minio (object storage)
+  # This mirrors the official Milvus standalone topology.
+  # ---------------------------------------------------------------------------
+  etcd:
+    image: quay.io/coreos/etcd:${ETCD_VERSION:-v3.5.5}
+    container_name: milvus-etcd
+    restart: unless-stopped
+    networks: [aihub]
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:${MINIO_VERSION:-RELEASE.2023-03-20T20-16-18Z}
+    container_name: milvus-minio
+    restart: unless-stopped
+    networks: [aihub]
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    logging: *default-logging
+
+  milvus:
+    image: milvusdb/milvus:${MILVUS_VERSION:-v2.4.13}
+    container_name: milvus
+    restart: unless-stopped
+    networks: [aihub]
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "127.0.0.1:19530:19530"   # gRPC API (pymilvus connects here)
+      - "127.0.0.1:9091:9091"     # metrics/health
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${MILVUS_MEM_LIMIT:-3g}
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Nginx — reverse proxy / API gateway (TLS, rate limiting, basic auth)
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:${NGINX_VERSION:-1.27-alpine}
+    container_name: nginx
+    restart: unless-stopped
+    networks: [aihub]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+
+  # ===========================================================================
+  # OBSERVABILITY  (started only with:  --profile monitoring)
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v2.54.1}
+    container_name: prometheus
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    networks: [aihub]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle           # allows `curl -X POST .../-/reload`
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION:-11.2.0}
+    container_name: grafana
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    networks: [aihub]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus, loki]
+    logging: *default-logging
+
+  loki:
+    image: grafana/loki:${LOKI_VERSION:-3.1.1}
+    container_name: loki
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    networks: [aihub]
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./logging/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    logging: *default-logging
+
+  promtail:
+    image: grafana/promtail:${PROMTAIL_VERSION:-3.1.1}
+    container_name: promtail
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    networks: [aihub]
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./logging/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      # Promtail discovers containers via the Docker socket and reads their logs.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on: [loki]
+    logging: *default-logging
+
+  node-exporter:
+    image: prom/node-exporter:${NODE_EXPORTER_VERSION:-v1.8.2}
+    container_name: node-exporter
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    networks: [aihub]
+    command:
+      - --path.rootfs=/host
+    pid: host           # so it can see host-level process/network stats
+    volumes:
+      - /:/host:ro,rslave
+    logging: *default-logging
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:${CADVISOR_VERSION:-v0.49.1}
+    container_name: cadvisor
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    networks: [aihub]
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    logging: *default-logging
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:${NGINX_EXPORTER_VERSION:-1.3.0}
+    container_name: nginx-exporter
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    networks: [aihub]
+    command:
+      - --nginx.scrape-uri=http://nginx:8080/stub_status   # internal status page
+    depends_on: [nginx]
+    logging: *default-logging
