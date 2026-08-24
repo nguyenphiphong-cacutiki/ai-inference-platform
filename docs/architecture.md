@@ -25,7 +25,7 @@ sense the second time.
 | **Ollama** | Serve the LLM and produce text embeddings | Dead-simple to run in Docker, CPU-friendly, one binary serves both chat + embeddings |
 | **ocr-service** | HTTP wrapper around RapidOCR (PP-OCR/PaddleOCR models on ONNX Runtime) | FastAPI is fast to write, async, and gives us `/metrics` + `/health` easily; ONNX backend avoids the paddlepaddle native-crash problem |
 | **search-service** | Embed text via Ollama, store/search vectors in Milvus | Keeps the RAG logic in one place; stays light by delegating embeddings |
-| **Milvus** | Vector database (ANN search) | The JD's "nice-to-have"; industry-standard vector DB |
+| **Milvus** | Vector database (ANN search) | industry-standard vector DB |
 | **etcd / minio** | Milvus's metadata store / object store | Required by Milvus standalone; you learn that "one service" is often several |
 | **Nginx** | TLS termination, routing, rate limit, auth | The classic API gateway; teaches reverse-proxy + networking |
 | **Prometheus** | Pull metrics, evaluate alert rules | The de-facto metrics system; pull model is easy to reason about |

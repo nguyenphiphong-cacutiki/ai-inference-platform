@@ -24,13 +24,14 @@ ollama:
 ```
 
 **Why these matter:**
+
 - **Volume `ollama_data`** - models are multi-GB. Without a named volume you'd
   re-download them every time the container is recreated.
 - **Healthcheck via `ollama list`** - the official image doesn't include `curl`,
   so the usual `curl -f localhost:11434` healthcheck would always fail. `ollama
-  list` exits 0 only when the server is up. (This is a real gotcha worth knowing.)
+list` exits 0 only when the server is up. (This is a real gotcha worth knowing.)
 - **`memory: 5g`** - a 3B model in CPU mode uses ~3–4 GB. The limit stops Ollama
-  from ballooning and OOM-killing the box. You'll *deliberately* set it too low
+  from ballooning and OOM-killing the box. You'll _deliberately_ set it too low
   in Phase 5 to watch an OOM happen.
 
 ### Start just Ollama and pull a model
@@ -41,7 +42,7 @@ docker compose ps                       # wait until STATUS shows (healthy)
 make models                             # pulls llama3.2:3b + nomic-embed-text
 ```
 
-`make models` runs `ollama pull` *inside* the container. The models land in the
+`make models` runs `ollama pull` _inside_ the container. The models land in the
 `ollama_data` volume, so they survive restarts.
 
 ### Test the LLM directly
@@ -75,11 +76,11 @@ This is the first service **we** build. Read `ocr-service/app/main.py` and
 > images (it's not an AVX issue - the CPU has AVX2). Rather than fight native
 > crashes, we serve the **exact same PP-OCR models through `rapidocr-onnxruntime`
 > (ONNX Runtime)**. Same models, a pure-ONNX backend, ~700 MB instead of ~3 GB,
-> and no native abort. This is *operations*: when a dependency is unstable in your
-> target environment, swap the runtime, keep the capability. (You can still
-> truthfully say "PaddleOCR / PP-OCR" on your CV.)
+> and no native abort. This is _operations_: when a dependency is unstable in your
+> target environment, swap the runtime, keep the capability.
 
 Key design points (all visible in the code):
+
 - **Model loaded once** in the FastAPI `lifespan` handler, not per request -
   loading the engine takes a moment and hundreds of MB.
 - **Models baked into the image** - `rapidocr-onnxruntime` ships the ONNX models
@@ -106,7 +107,7 @@ docker compose up -d --build ocr-service
 Grab any image with text (a screenshot works). Then:
 
 ```bash
-curl -F file=@/path/to/some-text-image.png http://localhost:8001/ocr/run
+curl -F file=@'/home/phong/Pictures/Screenshots/Screenshot from 2026-06-24 09-57-42.png' http://localhost:8001/ocr/run
 ```
 
 You get back `{ text, num_regions, lines:[{text, confidence, box}], ... }`.
@@ -125,25 +126,29 @@ curl -F file=@sample.png http://localhost:8001/ocr/run
 
 ## 1.3 Healthchecks, restart policy, limits - the operations core
 
-These three appear on **every** service and are exactly what the JD means by
+These three appear on **every** service and are means
 "verify it's running."
 
 **See health status:**
+
 ```bash
 docker compose ps
 docker inspect --format '{{json .State.Health}}' ocr-service | python3 -m json.tool
 ```
 
 **Prove the restart policy works:**
+
 ```bash
-docker kill ocr-service        # simulate a crash
+docker inspect --format '{{.State.Pid}}' ocr-service       # get PID
+sudo kill -9 <PID> # simulate a crash
 docker compose ps              # within seconds it restarts (restart: unless-stopped)
 ```
 
-`unless-stopped` means: restart on crash/reboot, but if *you* run
+`unless-stopped` means: restart on crash/reboot, but if _you_ run
 `docker compose stop ocr-service`, it stays down (won't fight you).
 
 **Watch resource usage:**
+
 ```bash
 docker stats                   # live CPU/MEM per container; Ctrl-C to exit
 ```
